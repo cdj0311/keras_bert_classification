@@ -27,3 +27,7 @@
   bert_fc accuracy: 94.2%
   
   bert_lstm accuracy: 96.8%
+
+Reference
+=====
+https://github.com/google-research/bert
