@@ -32,7 +32,6 @@ class BertClassification(object):
         self.max_len = max_len
         self.batch_size = batch_size
         self.epochs = epochs
-        self.save_weights_dir = save_weights_dir
         self.train_corpus_path=train_corpus_path
         self.test_corpus_path=test_corpus_path
         self.save_weights_file = save_weights_file

@@ -31,6 +31,8 @@ class BertClassification(object):
         self.batch_size = batch_size
         self.epochs = epochs
         self.weights_file_path = weights_file_path
+        self.train_corpus_path = train_corpus_path
+        self.test_corpus_path = test_corpus_path
 
         self.nb_samples = 25000 # 样本数
         self.bert_model = BertVector(pooling_strategy="REDUCE_MEAN", max_seq_len=self.max_len)
