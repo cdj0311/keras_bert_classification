@@ -53,7 +53,7 @@ class BertClassification(object):
             X.append(vec)
             y.append(label)
         X = np.array(X)
-        y = np_utils.to_categorical(np.asarray(y))
+        y = np_utils.to_categorical(np.asarray(y), num_classes=self.nb_classes)
         return X, y
 
     def data_iter(self):
