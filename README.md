@@ -1,4 +1,4 @@
-基于bert的keras文本分类，RNN(LSTM/GRU)和Dense finetune
+基于bert的keras文本分类，LSTM/GRU/FC
 ====
 #0. ready
 -------
