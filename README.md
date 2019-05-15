@@ -27,6 +27,10 @@
   bert_fc accuracy: 94.2%
   
   bert_lstm accuracy: 96.8%
+  
+#4. TODO
+------
+bert-DSSM
 
 Reference
 =====
