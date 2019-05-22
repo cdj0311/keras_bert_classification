@@ -37,7 +37,10 @@ class BertClassification(object):
         self.save_weights_file = save_weights_file
 
         self.nb_samples = 25000 # 样本数
-        self.bert_model = BertVector(pooling_strategy="NONE", max_seq_len=self.max_len)
+        self.bert_model = BertVector(pooling_strategy="NONE", 
+                                     max_seq_len=self.max_len, 
+                                     bert_model_path="./chinese_L-12_H-768_A-12/",
+280                                  graph_tmpfile="./tmp_graph_xxx)
 
     def text2bert(self, text):
         """ 将文本转换为bert向量  """

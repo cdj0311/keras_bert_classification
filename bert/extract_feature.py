@@ -1,17 +1,46 @@
+# coding:utf-8
 import sys
 import os
+import os
+import tempfile
+import random
+import json
+import logging
+from termcolor import colored
+import contextlib
+import tensorflow as tf
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
-from bert.graph import import_tf
 from bert import modeling
 from bert import tokenization
-from bert.graph import optimize_graph
+from bert import modeling
 from bert import args
+from bert.args import PoolingStrategy
 from queue import Queue
 from threading import Thread
 
+def import_tf(device_id=-1, verbose=False):
+    #os.environ['CUDA_VISIBLE_DEVICES'] = '-1' if device_id < 0 else str(device_id)
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0' if verbose else '3'    
+    tf.logging.set_verbosity(tf.logging.DEBUG if verbose else tf.logging.ERROR)
+    return tf
+
 tf = import_tf(0, True)
 
+
+def set_logger(context, verbose=False):
+    logger = logging.getLogger(context)
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    formatter = logging.Formatter(
+        '%(levelname)-.1s:' + context + ':[%(filename).5s:%(funcName).3s:%(lineno)3d]:%(message)s', datefmt=
+        '%m-%d %H:%M:%S')
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.handlers = []
+    logger.addHandler(console_handler)
+    return logger
+    
 
 class InputExample(object):
 
@@ -31,10 +60,131 @@ class InputFeatures(object):
         self.input_mask = input_mask
         self.input_type_ids = input_type_ids
 
+        
+def optimize_graph(config_name,
+                   ckpt_name,
+                   logger=None, 
+                   verbose=False, 
+                   pooling_strategy=PoolingStrategy.REDUCE_MEAN, 
+                   max_seq_len=40,
+                   graph_tmpfile="./tmpxxx"):
+    if not logger:
+        logger = set_logger(colored('BERT_VEC', 'yellow'), verbose)
+    try:
+        # we don't need GPU for optimizing the graph
+        tf = import_tf(device_id=0, verbose=verbose)
+        from tensorflow.python.tools.optimize_for_inference_lib import optimize_for_inference
+
+        # allow_soft_placement:自动选择运行设备
+        config = tf.ConfigProto(allow_soft_placement=True)
+        config_fp = config_name
+        init_checkpoint = ckpt_name
+        logger.info('model config: %s' % config_fp)
+
+        # 加载bert配置文件
+        with tf.gfile.GFile(config_fp, 'r') as f:
+            bert_config = modeling.BertConfig.from_dict(json.load(f))
+
+        logger.info('build graph...')
+        # input placeholders, not sure if they are friendly to XLA
+        input_ids = tf.placeholder(tf.int32, (None, max_seq_len), 'input_ids')
+        input_mask = tf.placeholder(tf.int32, (None, max_seq_len), 'input_mask')
+        input_type_ids = tf.placeholder(tf.int32, (None, max_seq_len), 'input_type_ids')
+
+        # xla加速
+        jit_scope = tf.contrib.compiler.jit.experimental_jit_scope if args.xla else contextlib.suppress
+
+        with jit_scope():
+            input_tensors = [input_ids, input_mask, input_type_ids]
+
+            model = modeling.BertModel(
+                config=bert_config,
+                is_training=False,
+                input_ids=input_ids,
+                input_mask=input_mask,
+                token_type_ids=input_type_ids,
+                use_one_hot_embeddings=False)
+
+            # 获取所有要训练的变量
+            tvars = tf.trainable_variables()
+
+            (assignment_map, initialized_variable_names) = modeling.get_assignment_map_from_checkpoint(tvars,
+                                                                                                       init_checkpoint)
+
+            tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+
+            minus_mask = lambda x, m: x - tf.expand_dims(1.0 - m, axis=-1) * 1e30
+            mul_mask = lambda x, m: x * tf.expand_dims(m, axis=-1)
+            masked_reduce_max = lambda x, m: tf.reduce_max(minus_mask(x, m), axis=1)
+            masked_reduce_mean = lambda x, m: tf.reduce_sum(mul_mask(x, m), axis=1) / (
+                    tf.reduce_sum(m, axis=1, keepdims=True) + 1e-10)
+
+            # 共享卷积核
+            with tf.variable_scope("pooling"):
+                # 如果只有一层，就只取对应那一层的weight
+                if len(args.layer_indexes) == 1:
+                    encoder_layer = model.all_encoder_layers[args.layer_indexes[0]]
+                else:
+                    # 否则遍历需要取的层，把所有层的weight取出来并拼接起来shape:768*层数
+                    all_layers = [model.all_encoder_layers[l] for l in args.layer_indexes]
+                    encoder_layer = tf.concat(all_layers, -1)
+
+                input_mask = tf.cast(input_mask, tf.float32)
+
+                # 以下代码是句向量的生成方法，可以理解为做了一个卷积的操作，但是没有把结果相加, 卷积核是input_mask
+                if pooling_strategy == PoolingStrategy.REDUCE_MEAN:
+                    pooled = masked_reduce_mean(encoder_layer, input_mask)
+                elif pooling_strategy == PoolingStrategy.REDUCE_MAX:
+                    pooled = masked_reduce_max(encoder_layer, input_mask)
+                elif pooling_strategy == PoolingStrategy.REDUCE_MEAN_MAX:
+                    pooled = tf.concat([masked_reduce_mean(encoder_layer, input_mask),
+                                        masked_reduce_max(encoder_layer, input_mask)], axis=1)
+                elif pooling_strategy == PoolingStrategy.FIRST_TOKEN or \
+                        pooling_strategy == PoolingStrategy.CLS_TOKEN:
+                    pooled = tf.squeeze(encoder_layer[:, 0:1, :], axis=1)
+                elif pooling_strategy == PoolingStrategy.LAST_TOKEN or \
+                        pooling_strategy == PoolingStrategy.SEP_TOKEN:
+                    seq_len = tf.cast(tf.reduce_sum(input_mask, axis=1), tf.int32)
+                    rng = tf.range(0, tf.shape(seq_len)[0])
+                    indexes = tf.stack([rng, seq_len - 1], 1)
+                    pooled = tf.gather_nd(encoder_layer, indexes)
+                elif pooling_strategy == PoolingStrategy.NONE:
+                    pooled = mul_mask(encoder_layer, input_mask)
+                else:
+                    raise NotImplementedError()
+
+            pooled = tf.identity(pooled, 'final_encodes')
+
+            output_tensors = [pooled]
+            tmp_g = tf.get_default_graph().as_graph_def()
+
+        with tf.Session(config=config) as sess:
+            logger.info('load parameters from checkpoint...')
+            sess.run(tf.global_variables_initializer())
+            logger.info('freeze...') 
+            tmp_g = tf.graph_util.convert_variables_to_constants(sess, tmp_g, [n.name[:-2] for n in output_tensors])
+            dtypes = [n.dtype for n in input_tensors]
+            logger.info('optimize...')
+            tmp_g = optimize_for_inference(
+                tmp_g,
+                [n.name[:-2] for n in input_tensors],
+                [n.name[:-2] for n in output_tensors],
+                [dtype.as_datatype_enum for dtype in dtypes],
+                False)
+        logger.info('write graph to a tmp file: %s' % graph_tmpfile)
+        with tf.gfile.GFile(graph_tmpfile, 'wb') as f:
+            f.write(tmp_g.SerializeToString())
+        return graph_tmpfile
+    except Exception as e:
+        logger.error('fail to optimize the graph!')
+        logger.error(e)
 
 class BertVector:
-
-    def __init__(self, batch_size=32, pooling_strategy="REDUCE_MEAN", max_seq_len=40):
+    def __init__(self, batch_size=1, 
+                       pooling_strategy="REDUCE_MEAN", 
+                       max_seq_len=40,
+                       bert_model_path="./chinese_L-12_H-768_A-12/",
+                       graph_tmpfile="./tmpxxx"):
         """
         init BertVector
         :param batch_size:     Depending on your memory default is 32
@@ -42,6 +192,13 @@ class BertVector:
         self.max_seq_length = max_seq_len
         self.layer_indexes = args.layer_indexes
         self.gpu_memory_fraction = 1
+        
+        self.file_path = os.path.dirname(__file__)
+
+        self.model_dir = os.path.join(self.file_path, bert_model_path)
+        self.config_name = os.path.join(self.model_dir, 'bert_config.json')
+        self.ckpt_name = os.path.join(self.model_dir, 'bert_model.ckpt')
+        self.vocab_file = os.path.join(self.model_dir, 'vocab.txt')
 
         if pooling_strategy == "NONE":
             pooling_strategy = args.PoolingStrategy.NONE
@@ -52,9 +209,13 @@ class BertVector:
         elif pooling_strategy == "REDUCE_MEAN_MAX":
             pooling_strategy = args.PoolingStrategy.REDUCE_MEAN_MAX
 
-        self.graph_path = optimize_graph(pooling_strategy=pooling_strategy, max_seq_len=self.max_seq_length)
+        self.graph_path = optimize_graph(self.config_name,
+                                         self.ckpt_name,
+                                         pooling_strategy=pooling_strategy, 
+                                         max_seq_len=self.max_seq_length, 
+                                         graph_tmpfile=graph_tmpfile)
 
-        self.tokenizer = tokenization.FullTokenizer(vocab_file=args.vocab_file, do_lower_case=True)
+        self.tokenizer = tokenization.FullTokenizer(vocab_file=self.vocab_file, do_lower_case=True)
         self.batch_size = batch_size
         self.estimator = self.get_estimator()
         self.input_queue = Queue(maxsize=1)
@@ -343,12 +504,12 @@ class BertVector:
 
 
 if __name__ == "__main__":
-    import time
-
-    bert = BertVector()
-    while True:
-        question = input('question: ')
-        start = time.time()
-        vectors = bert.encode([question])
-        print(str(vectors))
-        #print(f'predict time:----------{time.time() - start}')
+    bc = BertVector(batch_size=1, 
+                      pooling_strategy="REDUCE_MEAN", 
+                      max_seq_len=20,
+                      bert_model_path="D:\\workspaces\\code\\tfhub\\keras_dssm\\chinese_L-12_H-768_A-12\\",
+                      graph_tmpfile="D:\\workspaces\\code\\tfhub\\keras_dssm\\tmpxxx")
+    query = u"新浪移动"
+    vectors = bc.encode([query])
+    print(str(vectors))
+    
