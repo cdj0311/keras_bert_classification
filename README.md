@@ -28,9 +28,10 @@
   
   bert_lstm accuracy: 96.8%
   
-#4. TODO
+#4. Bert-DSSM
 ------
-bert-DSSM
+先将文本转换为bert句向量存在tfrecord中，这一步自行处理即可，
+然后从tfrecord中读取数据，数据格式为feed_dict = {"query":[[1,2,3], [4,6,7]], "doc": [[1,2,3], [4,6,7]]}
 
 Reference
 =====
