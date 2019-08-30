@@ -14,21 +14,7 @@
   抽取bert字向量特征，后面接LSTM/GRU和全连接层。
   训练命令：python bert_lstm.py
   
-#3. 结果对比
-------
-  分类任务：微博情感分析
-  
-  训练样本: 25000条
-  
-  测试样本：5000条
-  
-  textcnn accuracy: 93.6%
-  
-  bert_fc accuracy: 94.2%
-  
-  bert_lstm accuracy: 96.8%
-  
-#4. Bert-DSSM
+#3. Bert-DSSM
 ------
 先将文本转换为bert句向量存在tfrecord中，这一步自行处理即可，
 然后从tfrecord中读取数据，数据格式为feed_dict = {"query":[[1,2,3], [4,6,7]], "doc": [[1,2,3], [4,6,7]]}
