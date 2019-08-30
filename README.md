@@ -1,4 +1,4 @@
-基于bert特征的keras文本分类（接LSTM/GRU/FC）
+基于bert特征的文本分类与dssm语义表示
 ====
 #0. ready
 -------
