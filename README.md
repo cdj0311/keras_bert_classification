@@ -28,4 +28,5 @@ data目录下有1000条样本数据，格式为：标题\t内容
 Reference
 =====
 https://github.com/google-research/bert
+
 https://github.com/CyberZHG/keras-bert
