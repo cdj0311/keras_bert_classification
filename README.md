@@ -19,9 +19,13 @@
 先将文本转换为bert句向量存在tfrecord中，这一步自行处理即可，
 然后从tfrecord中读取数据，数据格式为feed_dict = {"query":[[1,2,3], [4,6,7]], "doc": [[1,2,3], [4,6,7]]}
 
-#4. TODO: 基于bert微调DSSM向量
+#4. 基于bert微调DSSM向量
 ------
+新增bert_dssm_finetune，基于bert微调的DSSM向量，使用https://github.com/CyberZHG/keras-bert 获取CLS向量然后接一层全连接。
+data目录下有1000条样本数据，格式为：标题\t内容
+
 
 Reference
 =====
 https://github.com/google-research/bert
+https://github.com/CyberZHG/keras-bert
